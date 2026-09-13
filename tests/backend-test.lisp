@@ -54,47 +54,55 @@
   (* 2 (1+ (length string))))
 
 (defun make-mock-ffi (&key (text "Hello pdfium")
+                           texts
                            (title "Fixture")
                            (author "egao1980"))
-  (list :init-library (lambda () t)
-        :destroy-library (lambda () t)
-        :load-mem-document
-        (lambda (data-buf size password)
-          (declare (ignore data-buf size password))
-          (cffi:make-pointer 1))
-        :load-document
-        (lambda (path password)
-          (declare (ignore path password))
-          (cffi:make-pointer 1))
-        :close-document (lambda (doc) (declare (ignore doc)) t)
-        :get-page-count (lambda (doc) (declare (ignore doc)) 1)
-        :load-page
-        (lambda (doc index)
-          (declare (ignore doc index))
-          (cffi:make-pointer 2))
-        :close-page (lambda (page) (declare (ignore page)) t)
-        :text-load-page
-        (lambda (page)
-          (declare (ignore page))
-          (cffi:make-pointer 3))
-        :text-count-chars (lambda (text-page) (declare (ignore text-page)) (length text))
-        :text-get-text
-        (lambda (text-page start count buf)
-          (declare (ignore text-page start))
-          (let ((n (min count (length text))))
-            (%utf16-write (subseq text 0 n) buf (* 2 (1+ n)))
-            (1+ n)))
-        :text-close-page (lambda (text-page) (declare (ignore text-page)) t)
-        :get-meta-text
-        (lambda (doc tag buf buflen)
-          (declare (ignore doc))
-          (let ((s (cond ((string= tag "Title") title)
-                         ((string= tag "Author") author)
-                         (t ""))))
-            (if (or (cffi:null-pointer-p buf) (zerop buflen))
-                (* 2 (1+ (length s)))
-                (%utf16-write s buf buflen))))
-        :get-last-error (lambda () 0)))
+  (let* ((pages (or texts (list text)))
+         (current 0))
+    (list :init-library (lambda () t)
+          :destroy-library (lambda () t)
+          :load-mem-document
+          (lambda (data-buf size password)
+            (declare (ignore data-buf size password))
+            (cffi:make-pointer 1))
+          :load-document
+          (lambda (path password)
+            (declare (ignore path password))
+            (cffi:make-pointer 1))
+          :close-document (lambda (doc) (declare (ignore doc)) t)
+          :get-page-count (lambda (doc) (declare (ignore doc)) (length pages))
+          :load-page
+          (lambda (doc index)
+            (declare (ignore doc))
+            (setf current index)
+            (cffi:make-pointer 2))
+          :close-page (lambda (page) (declare (ignore page)) t)
+          :text-load-page
+          (lambda (page)
+            (declare (ignore page))
+            (cffi:make-pointer 3))
+          :text-count-chars
+          (lambda (text-page)
+            (declare (ignore text-page))
+            (length (or (nth current pages) "")))
+          :text-get-text
+          (lambda (text-page start count buf)
+            (declare (ignore text-page start))
+            (let* ((text (or (nth current pages) ""))
+                   (n (min count (length text))))
+              (%utf16-write (subseq text 0 n) buf (* 2 (1+ n)))
+              (1+ n)))
+          :text-close-page (lambda (text-page) (declare (ignore text-page)) t)
+          :get-meta-text
+          (lambda (doc tag buf buflen)
+            (declare (ignore doc))
+            (let ((s (cond ((string= tag "Title") title)
+                           ((string= tag "Author") author)
+                           (t ""))))
+              (if (or (cffi:null-pointer-p buf) (zerop buflen))
+                  (* 2 (1+ (length s)))
+                  (%utf16-write s buf buflen))))
+          :get-last-error (lambda () 0))))
 
 (deftest available-p-does-not-crash
   (ok (member (doc-extract-backend-pdf:pdfium-available-p) '(t nil))))
@@ -116,7 +124,8 @@
       (ng (doc-extract-backend-pdf:pdf-driver-loaded-p b))
       (dolist (fn (list #'doc-extract-protocol:extract-text
                         #'doc-extract-protocol:extract-metadata
-                        #'doc-extract-protocol:extract-sections))
+                        #'doc-extract-protocol:extract-sections
+                        #'doc-extract-protocol:extract-document))
         (ok (signals (funcall fn b "x.pdf" :format :pdf)
                      'doc-extract-protocol:doc-extract-unsupported))
         (ok (signals (funcall fn b "x.pdf" :format :pdf)
@@ -206,7 +215,15 @@
       (ok (= 1 (length secs)))
       (ok (doc-extract-protocol:extracted-section-p (first secs)))
       (ok (search "Hello pdfium"
-                  (doc-extract-protocol:section-text (first secs)))))))
+                  (doc-extract-protocol:section-text (first secs)))))
+    (let* ((doc (doc-extract-protocol:extract-document b *hello-pdf* :format :pdf))
+           (pages (doc-extract-protocol:extracted-document-pages doc))
+           (blocks (doc-extract-protocol:extracted-document-blocks doc)))
+      (ok (doc-extract-protocol:extracted-document-p doc))
+      (ok (plusp (length pages)))
+      (ok (= 1 (doc-extract-protocol:page-info-number (first pages))))
+      (ok (plusp (length blocks)))
+      (ok (every #'doc-extract-protocol:block-id blocks)))))
 
 (deftest mocked-ffi-extract-text
   (let ((doc-extract-backend-pdf:*pdfium-fn-table* (make-mock-ffi))
@@ -222,7 +239,41 @@
       (ok (= 1 (length secs)))
       (ok (equal "Page 1" (doc-extract-protocol:section-title (first secs))))
       (ok (string= "Hello pdfium"
-                   (doc-extract-protocol:section-text (first secs)))))))
+                   (doc-extract-protocol:section-text (first secs)))))
+    (let* ((doc (doc-extract-protocol:extract-document b *hello-pdf* :format :pdf))
+           (pages (doc-extract-protocol:extracted-document-pages doc))
+           (root (first (doc-extract-protocol:extracted-document-blocks doc)))
+           (kid (and root (first (doc-extract-protocol:section-children root)))))
+      (ok (doc-extract-protocol:extracted-document-p doc))
+      (ok (= 1 (length pages)))
+      (ok (= 1 (doc-extract-protocol:page-info-number (first pages))))
+      (ok (stringp (doc-extract-protocol:block-id root)))
+      (ok (plusp (length (doc-extract-protocol:block-id root))))
+      (ok (and kid (stringp (doc-extract-protocol:block-id kid))))
+      (ok (equal 1 (doc-extract-protocol:provenance-entry-page
+                    (first (doc-extract-protocol:block-provenance root)))))
+      (ok (search "Hello pdfium" (doc-extract-protocol:document-text doc))))))
+
+(deftest registers-pdf-at-pdfium-priority
+  (ok (= 20 doc-extract-backend-pdf:+pdfium-extractor-priority+))
+  (ok (typep (doc-extract-protocol:find-extractor :pdf)
+             'doc-extract-backend-pdf:pdf-doc-extract-backend))
+  (ok (typep (doc-extract-protocol:find-extractor "application/pdf")
+             'doc-extract-backend-pdf:pdf-doc-extract-backend)))
+
+(deftest mocked-ffi-extract-document-multipage
+  (let ((doc-extract-backend-pdf:*pdfium-fn-table*
+         (make-mock-ffi :texts '("First page" "Second page")))
+        (b (%b)))
+    (let* ((doc (doc-extract-protocol:extract-document b *hello-pdf* :format :pdf))
+           (pages (doc-extract-protocol:extracted-document-pages doc))
+           (blocks (doc-extract-protocol:extracted-document-blocks doc)))
+      (ok (doc-extract-protocol:extracted-document-p doc))
+      (ok (= 2 (length pages)))
+      (ok (= 2 (length blocks)))
+      (ok (every #'doc-extract-protocol:block-id blocks))
+      (ok (search "First page" (doc-extract-protocol:document-text doc)))
+      (ok (search "Second page" (doc-extract-protocol:document-text doc))))))
 
 (deftest backend-slot-path-is-recorded
   (%without-pdfium
