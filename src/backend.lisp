@@ -1,5 +1,10 @@
 (in-package #:doc-extract-backend-pdf)
 
+(defparameter +pdfium-extractor-priority+ 20
+  "FIND-EXTRACTOR priority for this pdfium backend. Colocated HTML/office
+   backends register at 10. Corporate profile factories should register
+   docling/unstructured above 20 so they win for :pdf.")
+
 (defclass pdf-doc-extract-backend (doc-extract-backend)
   ((cffi-library-path :initarg :cffi-library-path
                       :accessor pdf-cffi-library-path
@@ -8,9 +13,10 @@
    (password :initarg :password :accessor pdf-password :initform nil))
   (:documentation
    "doc-extract-protocol PDF backend. DRIVER is a plist of function
-designators (:extract-text :extract-metadata :extract-sections). Without
-a driver and without libpdfium, GFs signal PDFIUM-NOT-LOADED
-(a DOC-EXTRACT-UNSUPPORTED) with USE-VALUE / RETRY."))
+designators (:extract-text :extract-metadata :extract-sections
+:extract-document :normalize-document). Without a driver and without
+libpdfium, GFs signal PDFIUM-NOT-LOADED (a DOC-EXTRACT-UNSUPPORTED)
+with USE-VALUE / RETRY."))
 
 (defun make-pdf-doc-extract-backend (&key cffi-library-path driver password)
   (make-instance 'pdf-doc-extract-backend
@@ -144,6 +150,62 @@ a driver and without libpdfium, GFs signal PDFIUM-NOT-LOADED
             sections))
     (nreverse sections)))
 
+(defun %trim-page-text (text)
+  (string-trim '(#\Space #\Tab #\Newline #\Return) (or text "")))
+
+(defun %page-section-block (page-index text)
+  (let* ((page (1+ page-index))
+         (prov (list (make-provenance-entry :page page)))
+         (trimmed (%trim-page-text text))
+         (kids (when (plusp (length trimmed))
+                 (list (make-text-block :text trimmed :provenance prov)))))
+    (make-section-block :title (format nil "Page ~D" page)
+                        :level 1
+                        :provenance prov
+                        :children kids)))
+
+(defun %pages-for (count)
+  (loop for i from 1 to (or count 0)
+        collect (make-page-info :number i)))
+
+(defun %metadata-from-plist (plist)
+  (make-document-metadata
+   :title (or (getf plist :title) "")
+   :authors (getf plist :authors)
+   :dates (getf plist :dates)
+   :language (getf plist :language)
+   :mimetype (or (getf plist :mimetype)
+                 (let ((fmt (getf plist :format)))
+                   (when fmt
+                     (format nil "~(~a~)" fmt))))
+   :filename (getf plist :filename)
+   :content-hash (getf plist :content-hash)))
+
+(defun %extracted-from-page-texts (texts metadata-plist)
+  "First-class EXTRACTED-DOCUMENT: one section+text-block per page,
+   PAGE-INFO list, provenance page numbers, then ENSURE-IDS."
+  (let* ((texts (or texts '()))
+         (n (or (getf metadata-plist :page-count) (length texts)))
+         (blocks (loop for i from 0 below n
+                       for text = (or (nth i texts) "")
+                       collect (%page-section-block i text)))
+         (md (%metadata-from-plist (or metadata-plist '()))))
+    (ensure-ids
+     (make-extracted-document :metadata md
+                              :blocks blocks
+                              :pages (%pages-for n)))))
+
+(defun %native-page-texts (doc)
+  (let ((n (or (%call :get-page-count doc) 0)))
+    (loop for i from 0 below n
+          collect (%page-text doc i))))
+
+(defun %extract-document-native (backend source)
+  (%with-document source (pdf-password backend)
+    (lambda (doc)
+      (%extracted-from-page-texts (%native-page-texts doc)
+                                  (%document-metadata doc)))))
+
 (defun %with-document (source password fn)
   (%ensure-inited)
   (labels ((run (doc)
@@ -229,3 +291,38 @@ a driver and without libpdfium, GFs signal PDFIUM-NOT-LOADED
 (defmethod extract-sections ((backend pdf-doc-extract-backend) source &key format)
   (%extract backend source :extract-sections #'%extract-sections-native
             :format format))
+
+(defmethod normalize-document ((backend pdf-doc-extract-backend) raw &key format)
+  "Override the protocol sections→document shim: pages, provenance, and
+   ids are first-class, not inferred after the fact."
+  (let ((fn (%driver-fn backend :normalize-document)))
+    (when fn
+      (return-from normalize-document (funcall fn backend raw :format format))))
+  (let* ((secs (extract-sections backend raw :format format))
+         (md (extract-metadata backend raw :format format))
+         (texts (mapcar #'section-text secs))
+         (plist (if (getf md :page-count)
+                    md
+                    (list* :page-count (length secs) (copy-list md)))))
+    (%extracted-from-page-texts texts plist)))
+
+(defun %extract-document (backend source &key format)
+  (let ((fn (%driver-fn backend :extract-document)))
+    (when fn
+      (return-from %extract-document (funcall fn backend source :format format))))
+  (when (pdf-cffi-library-path backend)
+    (load-pdfium :library-path (pdf-cffi-library-path backend)))
+  (when (or *pdfium-fn-table* *pdfium-loaded*)
+    (return-from %extract-document (%extract-document-native backend source)))
+  (when (%driver-fn backend :extract-sections)
+    (return-from %extract-document
+      (normalize-document backend source :format format)))
+  (%extract backend source :extract-document #'%extract-document-native
+            :format format))
+
+(defmethod extract-document ((backend pdf-doc-extract-backend) source &key format)
+  (%extract-document backend source :format format))
+
+(register-extractor 'pdf-doc-extract-backend
+                    :formats '(:pdf "application/pdf")
+                    :priority +pdfium-extractor-priority+)

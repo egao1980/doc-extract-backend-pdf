@@ -1,5 +1,5 @@
 (defsystem "doc-extract-backend-pdf"
-  :version "0.1.0"
+  :version "0.1.1"
   :description "pdfium CFFI backend for doc-extract-protocol"
   :author "egao1980"
   :license "MIT"

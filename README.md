@@ -20,7 +20,9 @@ This checkout does **not** vendor a pdfium build (hundreds of MB). Tests pass wi
 | `pdf-doc-extract-backend` | CLOS class (`doc-extract-backend`) |
 | `make-pdf-doc-extract-backend` | `&key cffi-library-path driver password` |
 | `use-pdf-doc-extract-backend` | bind `*doc-extract-backend*` |
-| `extract-text` / `extract-metadata` / `extract-sections` | protocol GFs |
+| `extract-text` / `extract-metadata` / `extract-sections` | protocol GFs (0.1) |
+| `extract-document` / `normalize-document` | `extracted-document` (0.1.1; pages, ids, provenance) |
+| `+pdfium-extractor-priority+` | `20` — `register-extractor` for `:pdf` / `application/pdf` |
 | `pdfium-available-p` / `load-pdfium` | native probe (never crashes ASDF) |
 | `*pdfium-fn-table*` | optional FPDF_* stand-in plist (tests) |
 | `pdf-driver` | kafka-style GF table (`:extract-text` …) |
@@ -28,6 +30,10 @@ This checkout does **not** vendor a pdfium build (hundreds of MB). Tests pass wi
 Source may be a pathname, a filesystem string, a `%PDF…` string, or an `(unsigned-byte 8)` vector.
 
 `extract-metadata` is a plist (`:format :pdf`, `:page-count`, plus cheap `FPDF_GetMetaText` tags when present: `:title` `:author` `:subject` `:keywords` `:creator` `:producer` `:creation-date` `:mod-date`). `extract-sections` is one `extracted-section` per page (`"Page N"`).
+
+`extract-document` (and `normalize-document`) return a first-class `extracted-document`: one section + text-block per page, `page-info` list, provenance page numbers, then `ensure-ids`. This overrides the protocol's sections→document shim. Load of this system registers `pdf-doc-extract-backend` for `:pdf` at priority **20** (colocated HTML/office are 10; corporate docling/unstructured should register higher).
+
+**Live `extract-document` still needs a native pdfium overlay.** Mock-driver and `*pdfium-fn-table*` tests stay green in default CI without `libpdfium`. Publishing the CFFI overlay (`publish-oci` / `publish-native-package`) is a separate problem — pdfium binaries are not in-tree and this 0.1.1 release does not invent them. Source-only Lisp publishes via `publish-checkout.yml`.
 
 CFFI subset: `FPDF_InitLibrary` / `FPDF_DestroyLibrary`, `FPDF_LoadMemDocument` / `FPDF_LoadDocument` / `FPDF_CloseDocument`, `FPDF_GetPageCount` / `FPDF_LoadPage` / `FPDF_ClosePage`, `FPDFText_LoadPage` / `FPDFText_CountChars` / `FPDFText_GetText` / `FPDFText_ClosePage`, `FPDF_GetMetaText` (+ `FPDF_GetLastError`).
 
@@ -120,7 +126,7 @@ Source-only Lisp still publishes via `publish-checkout.yml` → `publish-source.
 
 ## Tests
 
-`asdf:test-system "doc-extract-backend-pdf"` is green without `libpdfium`. A live extract is skipped unless `pdfium-available-p`.
+`asdf:test-system "doc-extract-backend-pdf"` is green without `libpdfium` (mock driver + mocked FFI, including `extract-document` ids/pages). A live extract is skipped unless `pdfium-available-p`.
 
 ## License
 

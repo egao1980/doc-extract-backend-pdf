@@ -12,6 +12,7 @@
            #:pdfium-available-p
            #:load-pdfium
            #:libpdfium
-           #:*pdfium-fn-table*))
+           #:*pdfium-fn-table*
+           #:+pdfium-extractor-priority+))
 
 (in-package #:doc-extract-backend-pdf)
