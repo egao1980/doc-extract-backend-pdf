@@ -89,7 +89,7 @@ Local stage (gitignored; do not commit binaries):
 ./scripts/stage-pdfium.sh darwin arm64
 ```
 
-Source-only Lisp still publishes via `publish-checkout.yml` → `publish-source.yml@main` (no native layer). Overlay binaries carry pdfium's own license (**BSD-3-Clause**); this Lisp tree remains **MIT**. `lib/`, `native-bundle/`, and downloaded tarballs are gitignored.
+Do **not** dispatch `publish-checkout.yml` / `publish-source.yml` for this repo: `:cl-repo` `:overlays` makes the source packager open `lib/<os>-<arch>/libpdfium*` (gitignored), so that job fails. Lisp + overlays ship together via `publish-oci.yml` only. Overlay binaries carry pdfium's own license (**BSD-3-Clause**); this Lisp tree remains **MIT**. `lib/`, `native-bundle/`, and downloaded tarballs are gitignored.
 
 ## Tests
 
