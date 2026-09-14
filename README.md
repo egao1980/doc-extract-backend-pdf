@@ -33,7 +33,7 @@ Source may be a pathname, a filesystem string, a `%PDF…` string, or an `(unsig
 
 `extract-document` (and `normalize-document`) return a first-class `extracted-document`: one section + text-block per page, `page-info` list, provenance page numbers, then `ensure-ids`. This overrides the protocol's sections→document shim. Load of this system registers `pdf-doc-extract-backend` for `:pdf` at priority **20** (colocated HTML/office are 10; corporate docling/unstructured should register higher).
 
-**Live `extract-document` still needs a native pdfium overlay.** Mock-driver and `*pdfium-fn-table*` tests stay green in default CI without `libpdfium`. Publishing the CFFI overlay (`publish-oci` / `publish-native-package`) is a separate problem — pdfium binaries are not in-tree and this 0.1.1 release does not invent them. Source-only Lisp publishes via `publish-checkout.yml`.
+**Live `extract-document` needs a native pdfium overlay.** Mock-driver and `*pdfium-fn-table*` tests stay green in default CI without `libpdfium`. Overlay binaries are not in-tree: `publish-oci.yml` downloads a pinned [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) build and publishes it via `publish-native-package.yml`. Source-only Lisp still publishes via `publish-checkout.yml`.
 
 CFFI subset: `FPDF_InitLibrary` / `FPDF_DestroyLibrary`, `FPDF_LoadMemDocument` / `FPDF_LoadDocument` / `FPDF_CloseDocument`, `FPDF_GetPageCount` / `FPDF_LoadPage` / `FPDF_ClosePage`, `FPDFText_LoadPage` / `FPDFText_CountChars` / `FPDFText_GetText` / `FPDFText_ClosePage`, `FPDF_GetMetaText` (+ `FPDF_GetLastError`).
 
@@ -70,59 +70,26 @@ Or bind `*pdfium-fn-table*` to a plist of FPDF_* functions and exercise the real
 
 Stage locally into `lib/<os>-<arch>/` (gitignored) or set `PDFIUM_LIBRARY`. Do not commit a Chromium-sized pdfium tree.
 
-### Publishing overlays (`publish-oci.yml` shape)
+### Publishing overlays (`publish-oci.yml`)
 
-Same owning-repo native publish as [`llama-cpp`](https://github.com/egao1980/llama-cpp):
+Owning-repo native publish, same reusable workflow as [`event-backend-libuv`](https://github.com/egao1980/event-backend-libuv): no grovel, no Chromium source. Each matrix job downloads a **prebuilt** `libpdfium` from [bblanchon/pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) (pin `PDFIUM_BINARIES_TAG`, currently **`chromium/8035`** / PDFium 154.0.8035.0) via `scripts/stage-pdfium.sh` (Unix) or `scripts/stage-pdfium.ps1` (Windows). The script stages overlay sonames into `lib/<os>-<arch>/` and copies them flat into `native-bundle/` (`libpdfium.so` + `libpdfium.so.1`, `libpdfium.dylib` + `libpdfium.1.dylib`, or `pdfium.dll` + `libpdfium.dll`). Artifacts are `native-<os>-<arch>`. The `publish` job calls `egao1980/cl-repository/.github/workflows/publish-native-package.yml@main` with `package-name: doc-extract-backend-pdf` and `source-paths` of the `.asd`, `src`, `LICENSE`, `README.md`. The packager honors `:cl-repo` `:overlays`.
 
-1. Per-platform job stages `libpdfium` into `native-bundle/` (download a prebuilt shared lib or a thin wrapper — **do not** check the binary into git).
-2. Upload `native-<os>-<arch>` artifacts.
-3. A `publish` job calls `egao1980/cl-repository/.github/workflows/publish-native-package.yml@main` with `package-name: doc-extract-backend-pdf` and `source-paths` of the `.asd`, `src`, `LICENSE`, `README.md`. The packager honors `:cl-repo` `:overlays` (not a parallel YAML inventory).
-4. Consumers resolve the overlay via cl-repository; this library absolute-preloads the staged file.
+Dispatch (needs `packages:write` on GHCR):
 
-Sketch (llama-cpp / `event-backend-libuv` shape):
-
-```yaml
-# .github/workflows/publish-oci.yml
-on:
-  push:
-    tags: ["v*"]
-  workflow_dispatch:
-    inputs:
-      version: { required: false, default: "" }
-      registry: { required: false, default: "ghcr.io" }
-
-jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: linux,  arch: amd64, runner: ubuntu-latest }
-          - { os: linux,  arch: arm64, runner: ubuntu-24.04-arm }
-          - { os: darwin, arch: arm64, runner: macos-latest }
-          - { os: windows, arch: amd64, runner: windows-latest }
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v5
-      # Stage lib/<os>-<arch>/libpdfium* → native-bundle/ (script TBD).
-      - uses: actions/upload-artifact@v6
-        with: { name: native-${{ matrix.os }}-${{ matrix.arch }}, path: native-bundle/ }
-
-  publish:
-    needs: [build, resolve-version]
-    uses: egao1980/cl-repository/.github/workflows/publish-native-package.yml@main
-    with:
-      package-name: doc-extract-backend-pdf
-      version: ${{ needs.resolve-version.outputs.version }}
-      registry: ${{ inputs.registry || 'ghcr.io' }}
-      source-paths: |
-        doc-extract-backend-pdf.asd
-        src
-        LICENSE
-        README.md
+```bash
+gh workflow run publish-oci.yml -R egao1980/doc-extract-backend-pdf -f version=0.1.2
+# optional: -f registry=ghcr.io
+# or push a v* tag (version is the tag without the leading v)
 ```
 
-Source-only Lisp still publishes via `publish-checkout.yml` → `publish-source.yml@main`. Overlay binaries carry pdfium's own license (BSD-3-Clause); keep them out of this MIT Lisp tree.
+Local stage (gitignored; do not commit binaries):
+
+```bash
+./scripts/stage-pdfium.sh            # detect host, or:
+./scripts/stage-pdfium.sh darwin arm64
+```
+
+Source-only Lisp still publishes via `publish-checkout.yml` → `publish-source.yml@main` (no native layer). Overlay binaries carry pdfium's own license (**BSD-3-Clause**); this Lisp tree remains **MIT**. `lib/`, `native-bundle/`, and downloaded tarballs are gitignored.
 
 ## Tests
 
@@ -130,4 +97,4 @@ Source-only Lisp still publishes via `publish-checkout.yml` → `publish-source.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE) for this Lisp tree. Staged/published `libpdfium` overlays come from [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) and are **BSD-3-Clause** (PDFium).

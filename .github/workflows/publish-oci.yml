@@ -1,0 +1,94 @@
+name: Publish OCI Package
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version (default: from tag or 0.1.2)"
+        required: false
+        default: ""
+      registry:
+        description: "OCI registry"
+        required: false
+        default: "ghcr.io"
+
+env:
+  PDFIUM_BINARIES_TAG: chromium/8035
+  PACKAGE_VERSION_DEFAULT: "0.1.2"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+          - os: windows
+            arch: amd64
+            runner: windows-latest
+
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Stage libpdfium (Unix)
+        if: matrix.os != 'windows'
+        run: |
+          chmod +x scripts/stage-pdfium.sh
+          ./scripts/stage-pdfium.sh "${{ matrix.os }}" "${{ matrix.arch }}"
+
+      - name: Stage libpdfium (Windows)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          .\scripts\stage-pdfium.ps1 -Os windows -Arch amd64
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-${{ matrix.os }}-${{ matrix.arch }}
+          path: native-bundle/
+
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - id: ver
+        shell: bash
+        run: |
+          V="${{ inputs.version }}"
+          if [ -z "$V" ] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          [ -z "$V" ] && V="${PACKAGE_VERSION_DEFAULT}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: [build, resolve-version]
+    permissions:
+      contents: read
+      packages: write
+    uses: egao1980/cl-repository/.github/workflows/publish-native-package.yml@main
+    with:
+      package-name: doc-extract-backend-pdf
+      version: ${{ needs.resolve-version.outputs.version }}
+      registry: ${{ inputs.registry || 'ghcr.io' }}
+      source-paths: |
+        doc-extract-backend-pdf.asd
+        src
+        LICENSE
+        README.md
+    secrets: inherit

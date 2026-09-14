@@ -6,6 +6,8 @@
 .cl-repository/
 /build/
 /lib/
+/native-bundle/
+*.tgz
 /native/*.dylib
 /native/*.so
 /native/*.dll
