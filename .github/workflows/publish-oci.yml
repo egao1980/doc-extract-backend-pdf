@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Package version (default: from tag or 0.1.2)"
+        description: "Package version (input, else v* tag, else .asd :version)"
         required: false
         default: ""
       registry:
@@ -16,7 +16,6 @@ on:
 
 env:
   PDFIUM_BINARIES_TAG: chromium/8035
-  PACKAGE_VERSION_DEFAULT: "0.1.2"
 
 jobs:
   build:
@@ -66,14 +65,20 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
+      - uses: actions/checkout@v5
       - id: ver
         shell: bash
+        # input > vX.Y.Z tag > .asd :version (never a hardcoded default: a
+        # plain dispatch once re-tagged 0.1.2 with 0.1.3 sources).
         run: |
           V="${{ inputs.version }}"
           if [ -z "$V" ] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
             V="${GITHUB_REF_NAME#v}"
           fi
-          [ -z "$V" ] && V="${PACKAGE_VERSION_DEFAULT}"
+          if [ -z "$V" ]; then
+            V="$(sed -nE 's/^[[:space:]]*:version[[:space:]]+"([^"]+)".*/\1/p' doc-extract-backend-pdf.asd | head -1)"
+          fi
+          [ -n "$V" ] || { echo "could not resolve package version" >&2; exit 1; }
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
   publish:
