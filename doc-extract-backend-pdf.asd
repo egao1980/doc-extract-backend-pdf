@@ -3,7 +3,7 @@
   :description "pdfium CFFI backend for doc-extract-protocol"
   :author "egao1980"
   :license "MIT"
-  :defsystem-depends-on ("asdf-native")
+  :defsystem-depends-on ((:version "asdf-native" "0.2.0"))
   :depends-on ("cffi" "doc-extract-protocol")
   :serial t
   :pathname "src"
