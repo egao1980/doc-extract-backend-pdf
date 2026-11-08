@@ -3,12 +3,9 @@
 ;;; PDFium C subset (fpdfview.h / fpdf_text.h / fpdf_doc.h).
 ;;; Load is absolute-path only — never LD_LIBRARY_PATH / DYLD_LIBRARY_PATH.
 ;;; Missing natives must not break ASDF load; GFs signal PDFIUM-NOT-LOADED.
-
-(define-foreign-library libpdfium
-  (:darwin (:or "libpdfium.dylib" "libpdfium.1.dylib"))
-  (:unix (:or "libpdfium.so" "libpdfium.so.1" "libpdfium.so.0"))
-  (:windows (:or "pdfium.dll" "libpdfium.dll"))
-  (t (:default "libpdfium")))
+;;; The .asd's optional :native-library "pdfium" component (asdf-native) loads
+;;; it from $PDFIUM_NATIVE, native/ or lib/<os>-<arch>/; LOAD-PDFIUM below adds
+;;; an explicit file (backend slot or $PDFIUM_LIBRARY) and FPDF_InitLibrary.
 
 (defcfun ("FPDF_InitLibrary" %fpdf-init-library) :void)
 (defcfun ("FPDF_DestroyLibrary" %fpdf-destroy-library) :void)
@@ -68,47 +65,6 @@
   (let ((v (uiop:getenv name)))
     (and v (plusp (length v)) v)))
 
-(defun %host-os ()
-  #+windows "windows"
-  #+darwin "darwin"
-  #+linux "linux"
-  #-(or windows darwin linux) "unknown")
-
-(defun %host-arch ()
-  #+(or x86-64 x64) "amd64"
-  #+(or arm64 aarch64) "arm64"
-  #-(or x86-64 x64 arm64 aarch64) "unknown")
-
-(defun %lib-candidates ()
-  #+windows '("pdfium.dll" "libpdfium.dll")
-  #+darwin '("libpdfium.dylib" "libpdfium.1.dylib")
-  #+(and unix (not darwin)) '("libpdfium.so" "libpdfium.so.1" "libpdfium.so.0")
-  #-(or windows darwin unix) '("libpdfium.so"))
-
-(defun %find-named (dir names)
-  (dolist (name names)
-    (let ((p (merge-pathnames name (uiop:ensure-directory-pathname dir))))
-      (when (probe-file p)
-        (return (namestring (truename p)))))))
-
-(defun %native-search-dirs ()
-  "Overlay native/, lib/<os>-<arch>/, optional PDFIUM_NATIVE directory.
-   No LD_LIBRARY_PATH / DYLD_LIBRARY_PATH."
-  (let ((dirs '()))
-    (let ((v (%env "PDFIUM_NATIVE")))
-      (when v
-        (push v dirs)))
-    (ignore-errors
-      (let* ((sys (asdf:find-system :doc-extract-backend-pdf nil))
-             (root (when sys (asdf:system-source-directory sys))))
-        (when root
-          (push (namestring (merge-pathnames "native/" root)) dirs)
-          (push (namestring
-                 (merge-pathnames (format nil "lib/~A-~A/" (%host-os) (%host-arch))
-                                  root))
-                dirs))))
-    (nreverse dirs)))
-
 (defun %probe-absolute (path)
   (when path
     (let ((p (probe-file path)))
@@ -116,24 +72,19 @@
 
 (defun %resolve-library-path (&key library-path)
   (or (%probe-absolute library-path)
-      (%probe-absolute (%env "PDFIUM_LIBRARY"))
-      (loop for dir in (%native-search-dirs)
-            when (and dir (uiop:directory-exists-p dir))
-              do (pushnew dir cffi:*foreign-library-directories* :test #'equal)
-                 (let ((found (%find-named dir (%lib-candidates))))
-                   (when found
-                     (return found))))))
+      (%probe-absolute (%env "PDFIUM_LIBRARY"))))
 
 (defun load-pdfium (&key library-path)
-  "Absolute-path load of libpdfium. Idempotent. Returns T when loaded.
-   Never calls LOAD-FOREIGN-LIBRARY unless a file was probed. Missing
-   library is a soft failure (warn + NIL) so ASDF load cannot crash."
+  "Initialise libpdfium. Idempotent. Returns T when loaded. Uses the library
+   the .asd component loaded, else LIBRARY-PATH or $PDFIUM_LIBRARY (absolute
+   file). Missing library is a soft failure (warn + NIL) so ASDF load cannot crash."
   (unless *pdfium-loaded*
-    (let ((abs (%resolve-library-path :library-path library-path)))
-      (when abs
+    (let* ((component (asdf-native:library-loaded-path "doc-extract-backend-pdf" "pdfium"))
+           (abs (unless component (%resolve-library-path :library-path library-path))))
+      (when (or component abs)
         (handler-case
             (progn
-              (load-foreign-library abs)
+              (when abs (load-foreign-library abs))
               (%fpdf-init-library)
               (setf *pdfium-loaded* t
                     *pdfium-library-inited* t))

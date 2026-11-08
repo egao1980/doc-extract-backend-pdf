@@ -41,11 +41,10 @@ CFFI subset: `FPDF_InitLibrary` / `FPDF_DestroyLibrary`, `FPDF_LoadMemDocument` 
 
 Absolute-path `cffi:load-foreign-library` only. **Never** `LD_LIBRARY_PATH` / `DYLD_LIBRARY_PATH`. `load-foreign-library` is not called unless a file was `probe-file`'d (kafka rule). Search order:
 
-1. Backend slot `cffi-library-path` (at GF time)
-2. Env `PDFIUM_LIBRARY` (absolute file)
-3. Overlay dest: `native/` and `lib/<os>-<arch>/` next to the ASDF system (plus optional dir `PDFIUM_NATIVE`)
+1. At ASDF load, the optional `(:native-library "pdfium" …)` component ([asdf-native](https://github.com/egao1980/asdf-native)) looks in `$PDFIUM_NATIVE`, then `native/` (overlay), then `lib/<os>-<arch>/` next to the system.
+2. When none of those has it: the backend slot `cffi-library-path` (at GF time), then env `PDFIUM_LIBRARY` (an absolute file).
 
-ASDF load calls `load-pdfium` and swallows a miss (`warn`). Consumers `(asdf:load-system "doc-extract-backend-pdf")` — no `ensure-*` helper required when the overlay is present.
+A miss warns and the system still loads. `load-pdfium` then runs `FPDF_InitLibrary`. Consumers `(asdf:load-system "doc-extract-backend-pdf")` — no `ensure-*` helper.
 
 Inject a driver so unit tests never `dlopen`:
 
