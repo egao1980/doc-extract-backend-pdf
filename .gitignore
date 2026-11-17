@@ -11,3 +11,4 @@
 /native/*.dylib
 /native/*.so
 /native/*.dll
+cl-repo.lock
