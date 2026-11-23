@@ -19,6 +19,9 @@ libpdfium, GFs signal PDFIUM-NOT-LOADED (a DOC-EXTRACT-UNSUPPORTED)
 with USE-VALUE / RETRY."))
 
 (defun make-pdf-doc-extract-backend (&key cffi-library-path driver password)
+  "PASSWORD: NIL (default) opens unencrypted PDFs (pdfium gets NULL); a
+   string is the user or owner password of an encrypted one."
+  (check-type password (or null string))
   (make-instance 'pdf-doc-extract-backend
                  :cffi-library-path cffi-library-path
                  :driver driver
@@ -307,18 +310,21 @@ with USE-VALUE / RETRY."))
     (%extracted-from-page-texts texts plist)))
 
 (defun %extract-document (backend source &key format)
+  "Driver first, as for the other GFs: its :EXTRACT-DOCUMENT, else its
+   :EXTRACT-SECTIONS through NORMALIZE-DOCUMENT, then libpdfium or the
+   mock table, else PDFIUM-NOT-LOADED with USE-VALUE / RETRY."
   (let ((fn (%driver-fn backend :extract-document)))
     (when fn
       (return-from %extract-document (funcall fn backend source :format format))))
+  (when (%driver-fn backend :extract-sections)
+    (return-from %extract-document
+      (normalize-document backend source :format format)))
   (when (pdf-cffi-library-path backend)
     (load-pdfium :library-path (pdf-cffi-library-path backend)))
   (when (or *pdfium-fn-table* *pdfium-loaded*)
     (return-from %extract-document (%extract-document-native backend source)))
-  (when (%driver-fn backend :extract-sections)
-    (return-from %extract-document
-      (normalize-document backend source :format format)))
   (%extract backend source :extract-document #'%extract-document-native
-            :format format))
+                           :format format))
 
 (defmethod extract-document ((backend pdf-doc-extract-backend) source &key format)
   (%extract-document backend source :format format))

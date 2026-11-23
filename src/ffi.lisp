@@ -7,15 +7,36 @@
 ;;; it from $PDFIUM_NATIVE, native/ or lib/<os>-<arch>/; LOAD-PDFIUM below adds
 ;;; an explicit file (backend slot or $PDFIUM_LIBRARY) and FPDF_InitLibrary.
 
+(define-foreign-type fpdf-bytestring-type ()
+  ()
+  (:actual-type :pointer)
+  (:simple-parser fpdf-bytestring)
+  (:documentation
+   "FPDF_BYTESTRING that may be NULL (fpdfview.h: \"If no password is
+needed, empty or NULL can be used\"). NIL => NULL pointer, a string =>
+a NUL-terminated copy in *DEFAULT-FOREIGN-ENCODING* freed after the
+call, a foreign pointer => passed as is. Plain :STRING rejects NIL
+(doc-extract-backend-pdf#9)."))
+
+(defmethod translate-to-foreign (value (type fpdf-bytestring-type))
+  (etypecase value
+    (null (values (null-pointer) nil))
+    (string (values (foreign-string-alloc value) t))
+    (foreign-pointer (values value nil))))
+
+(defmethod free-translated-object (pointer (type fpdf-bytestring-type) allocated)
+  (when allocated
+    (foreign-string-free pointer)))
+
 (defcfun ("FPDF_InitLibrary" %fpdf-init-library) :void)
 (defcfun ("FPDF_DestroyLibrary" %fpdf-destroy-library) :void)
 (defcfun ("FPDF_LoadMemDocument" %fpdf-load-mem-document) :pointer
   (data-buf :pointer)
   (size :int)
-  (password :string))
+  (password fpdf-bytestring))
 (defcfun ("FPDF_LoadDocument" %fpdf-load-document) :pointer
   (file-path :string)
-  (password :string))
+  (password fpdf-bytestring))
 (defcfun ("FPDF_CloseDocument" %fpdf-close-document) :void
   (document :pointer))
 (defcfun ("FPDF_GetPageCount" %fpdf-get-page-count) :int
@@ -54,6 +75,13 @@
 
 (defvar *pdfium-loaded* nil)
 (defvar *pdfium-library-inited* nil)
+
+(defvar *pdfium-search-enabled* t
+  "When NIL, LOAD-PDFIUM neither finds nor initialises libpdfium, even the
+   copy the .asd :native-library component already loaded. Bind it with
+   *PDFIUM-LOADED* NIL to run the backend as if libpdfium were absent
+   (driver / mock-table / PDFIUM-NOT-LOADED paths) in a process that has
+   the overlay (doc-extract-backend-pdf#11).")
 (defvar *pdfium-fn-table* nil
   "Optional plist of FPDF_* stand-ins for tests. Keys:
    :init-library :destroy-library :load-mem-document :load-document
@@ -77,8 +105,9 @@
 (defun load-pdfium (&key library-path)
   "Initialise libpdfium. Idempotent. Returns T when loaded. Uses the library
    the .asd component loaded, else LIBRARY-PATH or $PDFIUM_LIBRARY (absolute
-   file). Missing library is a soft failure (warn + NIL) so ASDF load cannot crash."
-  (unless *pdfium-loaded*
+   file). Missing library is a soft failure (warn + NIL) so ASDF load cannot crash.
+   With *PDFIUM-SEARCH-ENABLED* NIL it loads nothing and returns *PDFIUM-LOADED*."
+  (when (and *pdfium-search-enabled* (not *pdfium-loaded*))
     (let* ((component (asdf-native:library-loaded-path "doc-extract-backend-pdf" "pdfium"))
            (abs (unless component (%resolve-library-path :library-path library-path))))
       (when (or component abs)

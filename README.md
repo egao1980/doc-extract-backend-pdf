@@ -18,14 +18,14 @@ This checkout does **not** vendor a pdfium build (hundreds of MB). Tests pass wi
 | Binding | Role |
 |---------|------|
 | `pdf-doc-extract-backend` | CLOS class (`doc-extract-backend`) |
-| `make-pdf-doc-extract-backend` | `&key cffi-library-path driver password` |
+| `make-pdf-doc-extract-backend` | `&key cffi-library-path driver password`. `password`: `nil` (default, pdfium gets NULL: unencrypted PDFs) or the user / owner password string; anything else is a `type-error` |
 | `use-pdf-doc-extract-backend` | bind `*doc-extract-backend*` |
 | `extract-text` / `extract-metadata` / `extract-sections` | protocol GFs (0.1) |
 | `extract-document` / `normalize-document` | `extracted-document` (0.1.1; pages, ids, provenance) |
 | `+pdfium-extractor-priority+` | `20` — `register-extractor` for `:pdf` / `application/pdf` |
 | `pdfium-available-p` / `load-pdfium` | native probe (never crashes ASDF) |
 | `*pdfium-fn-table*` | optional FPDF_* stand-in plist (tests) |
-| `pdf-driver` | kafka-style GF table (`:extract-text` …) |
+| `pdf-driver` | kafka-style GF table (`:extract-text` …). A driver op wins over libpdfium; `extract-document` uses the driver's `:extract-document`, else its `:extract-sections` |
 
 Source may be a pathname, a filesystem string, a `%PDF…` string, or an `(unsigned-byte 8)` vector.
 
@@ -92,7 +92,12 @@ Do **not** dispatch `publish-checkout.yml` / `publish-source.yml` for this repo:
 
 ## Tests
 
-`asdf:test-system "doc-extract-backend-pdf"` is green without `libpdfium` (mock driver + mocked FFI, including `extract-document` ids/pages). A live extract is skipped unless `pdfium-available-p`.
+`asdf:test-system "doc-extract-backend-pdf"` is green with and without `libpdfium` (mock driver + mocked FFI, including `extract-document` ids/pages). The `missing-library-*` tests bind `*pdfium-loaded*` and the internal `*pdfium-search-enabled*` to NIL, so they see no library even when the `.asd` component loaded the overlay. The live tests (unencrypted with no password, empty, right, wrong and owner password on `tests/fixtures/locked-aes128.pdf`) are skipped unless `pdfium-available-p`. Default CI has no `libpdfium`; run them locally:
+
+```bash
+./scripts/stage-pdfium.sh   # or PDFIUM_NATIVE=<installed overlay>/native
+cl-repo test --system doc-extract-backend-pdf
+```
 
 ## License
 
