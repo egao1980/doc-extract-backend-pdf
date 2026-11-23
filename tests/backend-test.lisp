@@ -283,6 +283,34 @@
       (ok (signals (doc-extract-protocol:extract-text b "x.pdf" :format :pdf)
                    'doc-extract-backend-pdf:pdfium-not-loaded)))))
 
+(deftest live-pdfium-unencrypted-without-password
+  "doc-extract-backend-pdf#9: the default backend (password slot NIL) must
+   open an unencrypted PDF from a pathname (FPDF_LoadDocument) and from
+   octets (FPDF_LoadMemDocument). Needs the real libpdfium: stage it with
+   ./scripts/stage-pdfium.sh or set PDFIUM_NATIVE to an overlay native/ dir."
+  (if (doc-extract-backend-pdf:pdfium-available-p)
+      (let ((b (%b))
+            (path (uiop:with-temporary-file (:stream s :pathname p :keep t
+                                             :type "pdf"
+                                             :element-type '(unsigned-byte 8))
+                    (write-sequence *hello-pdf* s)
+                    p)))
+        (unwind-protect
+            (progn
+              (ok (null (doc-extract-backend-pdf:pdf-password b)))
+              (ok (search "Hello pdfium"
+                          (doc-extract-protocol:extract-text b path :format :pdf))
+                  "pathname source, no password")
+              (ok (search "Hello pdfium"
+                          (doc-extract-protocol:extract-text b *hello-pdf* :format :pdf))
+                  "octet source, no password")
+              (ok (equal "Fixture"
+                         (getf (doc-extract-protocol:extract-metadata b path :format :pdf)
+                               :title))
+                  "metadata, no password"))
+          (uiop:delete-file-if-exists path)))
+      (skip "libpdfium not present: ./scripts/stage-pdfium.sh or PDFIUM_NATIVE=<overlay>/native")))
+
 (deftest live-pdfium-extract
   (if (doc-extract-backend-pdf:pdfium-available-p)
       (let* ((b (%b))
