@@ -322,6 +322,51 @@
         (ok (search "Hello pdfium" text)))
       (skip "libpdfium not present")))
 
+(deftest live-pdfium-lisp-pathnames
+  "evidence: a pathname source names a file the way OPEN does. %WITH-DOCUMENT
+   hands (namestring source) to FPDF_LoadDocument, so (1) a relative
+   pathname is resolved against the OS working directory instead of
+   *DEFAULT-PATHNAME-DEFAULTS* (org-babel binds it to the .org file's
+   directory, SLIME / Sly ,cd sets it), and (2) a file name with [ or * gets
+   SBCL's namestring escapes (q\\[1].pdf), as every pathname DIRECTORY
+   returns for such a file does. PROBE-FILE finds both files; pypdf /
+   pypdfium2 open them."
+  (if (doc-extract-backend-pdf:pdfium-available-p)
+      (let* ((b (%b))
+             (dir (uiop:ensure-directory-pathname
+                   (merge-pathnames (format nil "pdf-paths-~36r/" (random (expt 36 8)))
+                                    (uiop:temporary-directory))))
+             (plain (merge-pathnames "hello.pdf" dir))
+             (bracket (merge-pathnames (make-pathname :name "q[1]" :type "pdf") dir)))
+        (ensure-directories-exist dir)
+        (dolist (p (list plain bracket))
+          (with-open-file (s p :direction :output :element-type '(unsigned-byte 8)
+                               :if-exists :supersede)
+            (write-sequence *hello-pdf* s)))
+        (flet ((text (source)
+                 (handler-case (doc-extract-protocol:extract-text b source :format :pdf)
+                   (error (e) (format nil "~a" e)))))
+          (unwind-protect
+              (progn
+                (let ((*default-pathname-defaults* dir))
+                  (ok (probe-file #p"hello.pdf") "PROBE-FILE finds the relative pathname")
+                  (let ((got (text #p"hello.pdf")))
+                    (ok (search "Hello pdfium" got)
+                        (format nil "relative pathname under *default-pathname-defaults*: ~s"
+                                got))))
+                (ok (probe-file bracket) "PROBE-FILE finds q[1].pdf")
+                (let ((got (text bracket))
+                      (listed (find-if (lambda (p) (search "[" (pathname-name p)))
+                                       (directory (merge-pathnames "*.pdf" dir)))))
+                  (ok (search "Hello pdfium" got)
+                      (format nil "q[1].pdf, namestring ~s: ~s" (namestring bracket) got))
+                  (ok (and listed (search "Hello pdfium" (text listed)))
+                      (format nil "q[1].pdf as DIRECTORY returns it: ~s" listed))))
+            (uiop:delete-file-if-exists plain)
+            (uiop:delete-file-if-exists bracket)
+            (ignore-errors (uiop:delete-empty-directory dir)))))
+      (skip "libpdfium not present: ./scripts/stage-pdfium.sh or PDFIUM_NATIVE=<overlay>/native")))
+
 (deftest password-argument-translation
   "doc-extract-backend-pdf#9 without libpdfium: the FPDF_BYTESTRING
    password type turns NIL into NULL and a string into a C string."
