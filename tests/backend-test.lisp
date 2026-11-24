@@ -114,7 +114,11 @@
   (ok (search #(37 37 69 79 70) *hello-pdf* :from-end t))) ; %%EOF
 
 (defmacro %without-pdfium (&body body)
+  "Run BODY as if libpdfium were absent, also when the overlay is staged
+   (doc-extract-backend-pdf#11): LOAD-PDFIUM must not find the copy the
+   .asd component loaded."
   `(let ((doc-extract-backend-pdf::*pdfium-loaded* nil)
+         (doc-extract-backend-pdf::*pdfium-search-enabled* nil)
          (doc-extract-backend-pdf:*pdfium-fn-table* nil))
      ,@body))
 
@@ -283,9 +287,143 @@
       (ok (signals (doc-extract-protocol:extract-text b "x.pdf" :format :pdf)
                    'doc-extract-backend-pdf:pdfium-not-loaded)))))
 
+(deftest live-pdfium-unencrypted-without-password
+  "doc-extract-backend-pdf#9: the default backend (password slot NIL) must
+   open an unencrypted PDF from a pathname (FPDF_LoadDocument) and from
+   octets (FPDF_LoadMemDocument). Needs the real libpdfium: stage it with
+   ./scripts/stage-pdfium.sh or set PDFIUM_NATIVE to an overlay native/ dir."
+  (if (doc-extract-backend-pdf:pdfium-available-p)
+      (let ((b (%b))
+            (path (uiop:with-temporary-file (:stream s :pathname p :keep t
+                                             :type "pdf"
+                                             :element-type '(unsigned-byte 8))
+                    (write-sequence *hello-pdf* s)
+                    p)))
+        (unwind-protect
+            (progn
+              (ok (null (doc-extract-backend-pdf:pdf-password b)))
+              (ok (search "Hello pdfium"
+                          (doc-extract-protocol:extract-text b path :format :pdf))
+                  "pathname source, no password")
+              (ok (search "Hello pdfium"
+                          (doc-extract-protocol:extract-text b *hello-pdf* :format :pdf))
+                  "octet source, no password")
+              (ok (equal "Fixture"
+                         (getf (doc-extract-protocol:extract-metadata b path :format :pdf)
+                               :title))
+                  "metadata, no password"))
+          (uiop:delete-file-if-exists path)))
+      (skip "libpdfium not present: ./scripts/stage-pdfium.sh or PDFIUM_NATIVE=<overlay>/native")))
+
 (deftest live-pdfium-extract
   (if (doc-extract-backend-pdf:pdfium-available-p)
       (let* ((b (%b))
              (text (doc-extract-protocol:extract-text b *hello-pdf* :format :pdf)))
         (ok (search "Hello pdfium" text)))
       (skip "libpdfium not present")))
+
+(deftest password-argument-translation
+  "doc-extract-backend-pdf#9 without libpdfium: the FPDF_BYTESTRING
+   password type turns NIL into NULL and a string into a C string."
+  (let ((type 'doc-extract-backend-pdf::fpdf-bytestring))
+    (multiple-value-bind (ptr param) (cffi:convert-to-foreign nil type)
+      (ok (cffi:null-pointer-p ptr) "NIL => NULL")
+      (cffi:free-converted-object ptr type param))
+    (multiple-value-bind (ptr param) (cffi:convert-to-foreign "" type)
+      (ok (not (cffi:null-pointer-p ptr)) "\"\" => empty C string")
+      (ok (string= "" (cffi:foreign-string-to-lisp ptr)))
+      (cffi:free-converted-object ptr type param))
+    (multiple-value-bind (ptr param) (cffi:convert-to-foreign "s3cret" type)
+      (ok (string= "s3cret" (cffi:foreign-string-to-lisp ptr)))
+      (cffi:free-converted-object ptr type param))
+    (ok (signals (cffi:convert-to-foreign 42 type) 'type-error))))
+
+(deftest password-must-be-string-or-nil
+  (ok (null (doc-extract-backend-pdf:pdf-password (%b))))
+  (ok (equal "pw" (doc-extract-backend-pdf:pdf-password (%b :password "pw"))))
+  (ok (signals (%b :password 42) 'type-error))
+  (ok (signals (%b :password :none) 'type-error)))
+
+(deftest mock-ffi-sees-nil-password
+  "The default backend hands NIL (not \"\") to FPDF_Load*Document."
+  (let* ((seen '())
+         (table (make-mock-ffi))
+         (doc-extract-backend-pdf:*pdfium-fn-table*
+          (list* :load-mem-document
+                 (lambda (buf size password)
+                   (declare (ignore buf size))
+                   (push (list :mem password) seen)
+                   (cffi:make-pointer 1))
+                 :load-document
+                 (lambda (path password)
+                   (declare (ignore path))
+                   (push (list :file password) seen)
+                   (cffi:make-pointer 1))
+                 table)))
+    (doc-extract-protocol:extract-text (%b) *hello-pdf* :format :pdf)
+    (doc-extract-protocol:extract-text (%b :password "pw") #p"/tmp/x.pdf" :format :pdf)
+    (ok (equal '((:file "pw") (:mem nil)) seen))))
+
+(deftest driver-wins-over-native
+  "doc-extract-backend-pdf#11: a driver's :extract-sections is used for
+   extract-document even when libpdfium (here the mock table) is there."
+  (let ((doc-extract-backend-pdf:*pdfium-fn-table* (make-mock-ffi :text "native"))
+        (b (%b :driver
+               (list :extract-sections
+                     (lambda (backend source &key format)
+                       (declare (ignore backend source format))
+                       (list (doc-extract-protocol:make-extracted-section
+                              :title "Page 1" :text "driver" :level 1)))
+                     :extract-metadata
+                     (lambda (backend source &key format)
+                       (declare (ignore backend source format))
+                       '(:format :pdf :page-count 1))))))
+    (let ((text (doc-extract-protocol:document-text
+                 (doc-extract-protocol:extract-document b *hello-pdf* :format :pdf))))
+      (ok (search "driver" text) text)
+      (ng (search "native" text)))))
+
+(defparameter *locked-pdf*
+  (asdf:system-relative-pathname "doc-extract-backend-pdf/tests"
+                                 "tests/fixtures/locked-aes128.pdf")
+  "AES-128 encrypted, user password \"s3cret\" (fixtures/make-locked-pdf.py).")
+
+(deftest live-pdfium-passwords
+  "Encrypted and unencrypted PDFs through the real FFI: no password, empty
+   password, right and wrong password, owner password."
+  (if (doc-extract-backend-pdf:pdfium-available-p)
+      (progn
+        (ok (search "Hello pdfium"
+                    (doc-extract-protocol:extract-text (%b :password "") *hello-pdf*
+                                                       :format :pdf))
+            "unencrypted, empty password")
+        (ok (search "Hello pdfium"
+                    (doc-extract-protocol:extract-text (%b :password "unused") *hello-pdf*
+                                                       :format :pdf))
+            "unencrypted, password ignored")
+        (ok (search "Locked report"
+                    (doc-extract-protocol:extract-text (%b :password "s3cret") *locked-pdf*
+                                                       :format :pdf))
+            "encrypted, user password, pathname")
+        (ok (search "Locked report"
+                    (doc-extract-protocol:extract-text
+                     (%b :password "s3cret")
+                     (doc-extract-backend-pdf::%coerce-octets *locked-pdf*)
+                     :format :pdf))
+            "encrypted, user password, octets")
+        (ok (search "Locked report"
+                    (doc-extract-protocol:extract-text (%b :password "owner-pw") *locked-pdf*
+                                                       :format :pdf))
+            "encrypted, owner password")
+        (dolist (b (list (%b) (%b :password "wrong")))
+          (let ((c (handler-case
+                       (progn (doc-extract-protocol:extract-text b *locked-pdf* :format :pdf)
+                         nil)
+                     (doc-extract-protocol:doc-extract-error (e) e))))
+            (ok (typep c 'doc-extract-protocol:doc-extract-error)
+                (format nil "password ~S: doc-extract-error"
+                        (doc-extract-backend-pdf:pdf-password b)))
+            (ng (typep c 'doc-extract-backend-pdf:pdfium-not-loaded))
+            (ok (and c (search "password" (princ-to-string c)))
+                (princ-to-string c)))))
+      (skip "libpdfium not present: ./scripts/stage-pdfium.sh or PDFIUM_NATIVE=<overlay>/native")))
