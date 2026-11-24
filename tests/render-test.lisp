@@ -124,7 +124,9 @@ a call the mock does not provide signals instead of reaching libpdfium."
   "True when NAMES occur in LOG's calls in this order (others may come between)."
   (let ((calls (%names log)))
     (loop for n in names
-          always (let ((p (position n calls))) (and p (setf calls (nthcdr (1+ p) calls)))))))
+          always (let ((p (position n calls)))
+                   ;; T even when N is the last call (NTHCDR leaves NIL).
+                   (when p (setf calls (nthcdr (1+ p) calls)) t)))))
 
 (defun %entry (name log) (rest (assoc name (funcall log))))
 
