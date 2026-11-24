@@ -63,14 +63,139 @@
 
 (in-package #:doc-extract-backend-pdf)
 
-(defun %render-pending (name)
-  "Contract stub for RENDER-PAGE. Every call is replaced by the implementation,
-then this function is deleted."
-  (error "doc-extract-backend-pdf render pending: ~A" name))
+;;; Geometry and limits (pure) ---------------------------------------------------
+
+(defun %raster-extent (points dpi)
+  "Pixels that cover POINTS (1/72 inch) at DPI: the nearest integer, halves
+up, at least 1. Exact rationals, so neither float error nor CL:ROUND's
+halves-to-even changes the result."
+  (max 1 (floor (+ (/ (* (rational points) (rational dpi)) 72) 1/2))))
+
+(defun %check-raster-limits (width height limits max-pixels)
+  "Refuse a WIDTH x HEIGHT BGRA bitmap that LIMITS or MAX-PIXELS do not allow,
+with STACK-IMAGE:IMAGE-LIMIT-EXCEEDED. Neither check offers a restart."
+  (stack-image:check-dimensions width height 4 :limits limits :format :pdf)
+  (let ((pixels (* width height)))
+    (when (and max-pixels (> pixels max-pixels))
+      (error 'stack-image:image-limit-exceeded
+             :limit :pixels :allowed max-pixels :actual pixels :format :pdf))))
+
+;;; Handle lifetimes, in the shape of %WITH-DOCUMENT -----------------------------
+
+(defun %call-with-page (doc index fn)
+  "Call FN with page INDEX of DOC and close the page on every exit. A null
+handle signals DOC-EXTRACT-ERROR, and nothing is closed."
+  (let ((page (%call :load-page doc index)))
+    (when (%null-handle-p page)
+      (error 'doc-extract-error
+             :format :pdf
+             :message (format nil "failed to load PDF page ~D" index)))
+    (unwind-protect (funcall fn page)
+      (%call :close-page page))))
+
+(defun %call-with-bitmap (width height fn)
+  "Call FN with a WIDTH x HEIGHT BGRA bitmap whose buffer pdfium allocates and
+owns, and destroy it on every exit. A null handle signals DOC-EXTRACT-ERROR,
+and nothing is destroyed."
+  (let ((bitmap (%call :bitmap-create-ex width height +fpdfbitmap-bgra+
+                       (null-pointer) 0)))
+    (when (%null-handle-p bitmap)
+      (error 'doc-extract-error
+             :format :pdf
+             :message (format nil "failed to create a ~D x ~D bitmap" width height)))
+    (unwind-protect (funcall fn bitmap)
+      (%call :bitmap-destroy bitmap))))
+
+;;; Copy -------------------------------------------------------------------------
+
+(defun %copy-bgra-rows (buffer stride width height)
+  "Packed R G B A octets, row-major, top row first, from the strided B G R A
+rows of the foreign BUFFER. Row Y starts at byte Y x STRIDE; only its first
+4 x WIDTH bytes are read."
+  (declare (type fixnum stride width height))
+  (let ((out (make-array (* 4 width height) :element-type '(unsigned-byte 8)))
+        (dst 0))
+    (declare (type (simple-array (unsigned-byte 8) (*)) out)
+             (type fixnum dst))
+    (dotimes (y height out)
+      (let ((src (* y stride)))
+        (declare (type fixnum src))
+        (dotimes (x width)
+          (setf (aref out dst) (mem-aref buffer :uint8 (+ src 2))
+                (aref out (+ dst 1)) (mem-aref buffer :uint8 (+ src 1))
+                (aref out (+ dst 2)) (mem-aref buffer :uint8 src)
+                (aref out (+ dst 3)) (mem-aref buffer :uint8 (+ src 3)))
+          (incf src 4)
+          (incf dst 4))))))
+
+(defun %bitmap-rgba-image (bitmap width height)
+  "The :RGBA STACK-IMAGE:IMAGE held by the WIDTH x HEIGHT BITMAP. A null buffer,
+or a stride below 4 x WIDTH, signals DOC-EXTRACT-ERROR before any byte is read."
+  (let ((buffer (%call :bitmap-get-buffer bitmap))
+        (stride (%call :bitmap-get-stride bitmap)))
+    (when (%null-handle-p buffer)
+      (error 'doc-extract-error :format :pdf :message "the bitmap has no buffer"))
+    (unless (and (integerp stride) (>= stride (* 4 width)))
+      (error 'doc-extract-error
+             :format :pdf
+             :message (format nil "bitmap stride ~A is below ~D (4 x width)"
+                              stride (* 4 width))))
+    (stack-image:make-image :width width :height height :format :rgba
+                            :pixels (%copy-bgra-rows buffer stride width height))))
+
+;;; Render -----------------------------------------------------------------------
+
+(defun %render-page-native (document password index dpi format max-pixels limits)
+  "Steps 2-9 of the file header. The handles nest document > page > bitmap, so
+they are released in the reverse order on every exit, and before the format
+conversion allocates."
+  (stack-image:convert-image
+   (%with-document document password
+     (lambda (doc)
+       (let ((count (or (%call :get-page-count doc) 0)))
+         (when (>= index count)
+           (error 'pdf-page-not-found
+                  :index index :page-count count :format :pdf
+                  :message (format nil "page index ~D is out of range (~D page~:P)"
+                                   index count))))
+       (%call-with-page doc index
+         (lambda (page)
+           (let ((width (%raster-extent (%call :get-page-width-f page) dpi))
+                 (height (%raster-extent (%call :get-page-height-f page) dpi)))
+             (%check-raster-limits width height limits max-pixels)
+             (%call-with-bitmap width height
+               (lambda (bitmap)
+                 (%call :bitmap-fill-rect bitmap 0 0 width height +opaque-white+)
+                 (%call :render-page-bitmap bitmap page 0 0 width height 0 +fpdf-annot+)
+                 (%bitmap-rgba-image bitmap width height))))))))
+   format))
 
 (defun render-page (document index &key (dpi 72) (format :rgba) max-pixels
                                       (limits stack-image:*image-limits*) password)
   "Rasterize page INDEX (zero-based) of the PDF DOCUMENT at DPI → a
-STACK-IMAGE:IMAGE in pixel FORMAT, white background (see the file header)."
-  (declare (ignorable document index dpi format max-pixels limits password))
-  (%render-pending 'render-page))
+STACK-IMAGE:IMAGE in pixel FORMAT, white background (see the file header).
+Without libpdfium and without *PDFIUM-FN-TABLE*, signals PDFIUM-NOT-LOADED
+with USE-VALUE (return a supplied image) and RETRY (check again, for example
+after LOAD-PDFIUM in a handler)."
+  (check-type index (integer 0))
+  (check-type dpi (real (0)))
+  (check-type format (member :gray :gray-alpha :rgb :rgba))
+  (check-type max-pixels (or null (integer 1)))
+  (check-type limits stack-image:image-limits)
+  (check-type password (or null string))
+  (tagbody
+   :again
+     (unless (or *pdfium-fn-table* *pdfium-loaded*)
+       (restart-case
+           (error 'pdfium-not-loaded :format :pdf :message "libpdfium is not loaded")
+         (use-value (value)
+           :report "Return a supplied image from RENDER-PAGE"
+           :interactive (lambda ()
+                          (format *query-io* "Image form: ")
+                          (force-output *query-io*)
+                          (list (eval (read *query-io*))))
+           (return-from render-page value))
+         (retry ()
+           :report "Retry after loading libpdfium or binding *PDFIUM-FN-TABLE*"
+           (go :again)))))
+  (%render-page-native document password index dpi format max-pixels limits))
