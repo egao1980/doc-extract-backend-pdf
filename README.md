@@ -22,6 +22,8 @@ This checkout does **not** vendor a pdfium build (hundreds of MB). Tests pass wi
 | `use-pdf-doc-extract-backend` | bind `*doc-extract-backend*` |
 | `extract-text` / `extract-metadata` / `extract-sections` | protocol GFs (0.1) |
 | `extract-document` / `normalize-document` | `extracted-document` (0.1.1; pages, ids, provenance) |
+| `render-page` | `document index &key dpi format max-pixels limits password` → a `stack-image:image` ([image-protocol](https://github.com/egao1980/image-protocol)) of page `index` (zero-based) on a white background, points × `dpi` / 72 pixels a side (nearest, halves up, at least 1), `format` one of `:gray :gray-alpha :rgb :rgba` (default `:rgba`). Signals `pdf-page-not-found` for an index past the page count, and `stack-image:image-limit-exceeded` (from `limits`, default `stack-image:*image-limits*`, and `max-pixels`) before any bitmap is allocated (0.2.0) |
+| `pdf-page-not-found` | `doc-extract-error` with `pdf-page-not-found-index` / `pdf-page-not-found-page-count` |
 | `+pdfium-extractor-priority+` | `20` — `register-extractor` for `:pdf` / `application/pdf` |
 | `pdfium-available-p` / `load-pdfium` | native probe (never crashes ASDF) |
 | `*pdfium-fn-table*` | optional FPDF_* stand-in plist (tests) |
@@ -35,7 +37,7 @@ Source may be a pathname, a filesystem string, a `%PDF…` string, or an `(unsig
 
 **Live `extract-document` needs a native pdfium overlay.** Mock-driver and `*pdfium-fn-table*` tests stay green in default CI without `libpdfium`. Overlay binaries are not in-tree: `publish-oci.yml` downloads a pinned [pdfium-binaries](https://github.com/bblanchon/pdfium-binaries) build and publishes it via `publish-native-package.yml`. Source-only Lisp still publishes via `publish-checkout.yml`.
 
-CFFI subset: `FPDF_InitLibrary` / `FPDF_DestroyLibrary`, `FPDF_LoadMemDocument` / `FPDF_LoadDocument` / `FPDF_CloseDocument`, `FPDF_GetPageCount` / `FPDF_LoadPage` / `FPDF_ClosePage`, `FPDFText_LoadPage` / `FPDFText_CountChars` / `FPDFText_GetText` / `FPDFText_ClosePage`, `FPDF_GetMetaText` (+ `FPDF_GetLastError`).
+CFFI subset: `FPDF_InitLibrary` / `FPDF_DestroyLibrary`, `FPDF_LoadMemDocument` / `FPDF_LoadDocument` / `FPDF_CloseDocument`, `FPDF_GetPageCount` / `FPDF_LoadPage` / `FPDF_ClosePage`, `FPDFText_LoadPage` / `FPDFText_CountChars` / `FPDFText_GetText` / `FPDFText_ClosePage`, `FPDF_GetMetaText` (+ `FPDF_GetLastError`); for `render-page`, `FPDF_GetPageWidthF` / `FPDF_GetPageHeightF`, `FPDFBitmap_CreateEx` / `FPDFBitmap_FillRect` / `FPDF_RenderPageBitmap`, `FPDFBitmap_GetBuffer` / `FPDFBitmap_GetStride` / `FPDFBitmap_Destroy`.
 
 ## Load strategy
 

@@ -64,6 +64,44 @@ call, a foreign pointer => passed as is. Plain :STRING rejects NIL
   (buflen :unsigned-long))
 (defcfun ("FPDF_GetLastError" %fpdf-get-last-error) :unsigned-long)
 
+;;; Rasterization (fpdfview.h), used by RENDER-PAGE.
+(defcfun ("FPDF_GetPageWidthF" %fpdf-get-page-width-f) :float
+  (page :pointer))
+(defcfun ("FPDF_GetPageHeightF" %fpdf-get-page-height-f) :float
+  (page :pointer))
+(defcfun ("FPDFBitmap_CreateEx" %fpdf-bitmap-create-ex) :pointer
+  (width :int)
+  (height :int)
+  (format :int)
+  (first-scan :pointer)
+  (stride :int))
+(defcfun ("FPDFBitmap_FillRect" %fpdf-bitmap-fill-rect) :int
+  (bitmap :pointer)
+  (left :int)
+  (top :int)
+  (width :int)
+  (height :int)
+  (color :unsigned-long))
+(defcfun ("FPDF_RenderPageBitmap" %fpdf-render-page-bitmap) :void
+  (bitmap :pointer)
+  (page :pointer)
+  (start-x :int)
+  (start-y :int)
+  (size-x :int)
+  (size-y :int)
+  (rotate :int)
+  (flags :int))
+(defcfun ("FPDFBitmap_GetBuffer" %fpdf-bitmap-get-buffer) :pointer
+  (bitmap :pointer))
+(defcfun ("FPDFBitmap_GetStride" %fpdf-bitmap-get-stride) :int
+  (bitmap :pointer))
+(defcfun ("FPDFBitmap_Destroy" %fpdf-bitmap-destroy) :void
+  (bitmap :pointer))
+
+(defconstant +fpdfbitmap-bgra+ 4 "FPDFBitmap_BGRA: bytes B G R A, alpha not premultiplied.")
+(defconstant +fpdf-annot+ #x01 "FPDF_RenderPageBitmap flag: draw annotations.")
+(defconstant +opaque-white+ #xFFFFFFFF "FPDF_DWORD colour 0xAARRGGBB.")
+
 (defparameter +fpdf-err-names+
   '((0 . "success")
     (1 . "unknown")
@@ -87,7 +125,9 @@ call, a foreign pointer => passed as is. Plain :STRING rejects NIL
    :init-library :destroy-library :load-mem-document :load-document
    :close-document :get-page-count :load-page :close-page
    :text-load-page :text-count-chars :text-get-text :text-close-page
-   :get-meta-text :get-last-error.")
+   :get-meta-text :get-last-error; for RENDER-PAGE also :get-page-width-f
+   :get-page-height-f :bitmap-create-ex :bitmap-fill-rect :render-page-bitmap
+   :bitmap-get-buffer :bitmap-get-stride :bitmap-destroy.")
 
 (defun %env (name)
   (let ((v (uiop:getenv name)))
@@ -141,7 +181,15 @@ call, a foreign pointer => passed as is. Plain :STRING rejects NIL
     (:text-get-text #'%fpdf-text-get-text)
     (:text-close-page #'%fpdf-text-close-page)
     (:get-meta-text #'%fpdf-get-meta-text)
-    (:get-last-error #'%fpdf-get-last-error)))
+    (:get-last-error #'%fpdf-get-last-error)
+    (:get-page-width-f #'%fpdf-get-page-width-f)
+    (:get-page-height-f #'%fpdf-get-page-height-f)
+    (:bitmap-create-ex #'%fpdf-bitmap-create-ex)
+    (:bitmap-fill-rect #'%fpdf-bitmap-fill-rect)
+    (:render-page-bitmap #'%fpdf-render-page-bitmap)
+    (:bitmap-get-buffer #'%fpdf-bitmap-get-buffer)
+    (:bitmap-get-stride #'%fpdf-bitmap-get-stride)
+    (:bitmap-destroy #'%fpdf-bitmap-destroy)))
 
 (defun %table-fn (name)
   (and *pdfium-fn-table* (getf *pdfium-fn-table* name)))

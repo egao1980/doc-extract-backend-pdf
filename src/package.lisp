@@ -13,6 +13,11 @@
            #:load-pdfium
            #:libpdfium
            #:*pdfium-fn-table*
-           #:+pdfium-extractor-priority+))
+           #:+pdfium-extractor-priority+
+
+           #:render-page
+           #:pdf-page-not-found
+           #:pdf-page-not-found-index
+           #:pdf-page-not-found-page-count))
 
 (in-package #:doc-extract-backend-pdf)

@@ -1,0 +1,2 @@
+# PDF xref tables hold byte offsets: never convert line endings.
+*.pdf binary
