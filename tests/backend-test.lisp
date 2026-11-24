@@ -427,3 +427,35 @@
             (ok (and c (search "password" (princ-to-string c)))
                 (princ-to-string c)))))
       (skip "libpdfium not present: ./scripts/stage-pdfium.sh or PDFIUM_NATIVE=<overlay>/native")))
+
+(deftest live-pdfium-concurrent-extract
+  "evidence (doc-extract-backend-pdf#9, prosecutor round 3): now that the
+   default backend opens unencrypted PDFs, extracting from several threads
+   at once (a web worker pool; pypdf and pdfplumber readers are independent
+   per thread) must give each thread its text. PDFium is not thread-safe
+   and the backend does not serialize its FPDF_* calls, so 8 threads × 25
+   extractions of *HELLO-PDF* end in \"CORRUPTION WARNING ... Memory fault
+   at 0x10\" and \"fatal error encountered in SBCL\": the test process dies
+   before the check runs. Needs libpdfium (PDFIUM_NATIVE=<overlay>/native)."
+  (if (doc-extract-backend-pdf:pdfium-available-p)
+      #+sb-thread
+      (let* ((b (%b))
+             (expected (doc-extract-protocol:extract-text b *hello-pdf* :format :pdf))
+             (threads
+              (loop repeat 8
+                    collect (sb-thread:make-thread
+                             (lambda ()
+                               (loop repeat 25
+                                     count (not (equal expected
+                                                       (handler-case
+                                                           (doc-extract-protocol:extract-text
+                                                            b *hello-pdf* :format :pdf)
+                                                         (error (e) (princ-to-string e)))))))))))
+        (ok (search "Hello pdfium" expected))
+        (let ((mismatches (mapcar #'sb-thread:join-thread threads)))
+          (ok (every #'zerop mismatches)
+              (format nil "8 threads × 25 extractions, wrong results per thread: ~s"
+                      mismatches))))
+      #-sb-thread
+      (skip "needs SBCL threads")
+      (skip "libpdfium not present: ./scripts/stage-pdfium.sh or PDFIUM_NATIVE=<overlay>/native")))
